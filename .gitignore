@@ -1,0 +1,19 @@
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+scripts/.bootstrap.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Local artifacts
+tmp/

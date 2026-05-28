@@ -1,0 +1,90 @@
+# Reusable CI workflow for Node projects (Backend + Frontend).
+#
+# Called from app repos like:
+#
+#   jobs:
+#     ci:
+#       uses: lehaithanh10/cartaskers-infra/.github/workflows/ci-node.yml@v1
+#       with:
+#         working-directory: .
+#         node-version: "20"
+#         run-tests: true
+#
+# Phase 1 caveat: action versions are pinned to major tags for readability.
+# Phase 3 hardening will convert these to full SHA pins (supply-chain defence).
+
+name: ci-node
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Path to the package.json (relative to repo root)"
+        type: string
+        default: "."
+      node-version:
+        description: "Node version to install"
+        type: string
+        default: "20"
+      run-tests:
+        description: "Run `npm test` (skip if no tests exist yet)"
+        type: boolean
+        default: true
+      run-build:
+        description: "Run `npm run build`"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks needs history
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check + build
+        if: inputs.run-build
+        run: npm run build
+
+      - name: Test
+        if: inputs.run-tests
+        run: npm test --if-present
+
+      - name: Dependency audit (high+)
+        # Don't fail the build on vulns yet — surface them in the log only.
+        # Tighten to `--audit-level=high` failing once known issues are triaged.
+        run: npm audit --audit-level=high || true
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

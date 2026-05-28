@@ -1,0 +1,94 @@
+# Reusable Fly.io deploy workflow.
+#
+# Called from app repos like:
+#
+#   jobs:
+#     deploy:
+#       environment: staging      # ← triggers approval gate on `production`
+#       uses: lehaithanh10/cartaskers-infra/.github/workflows/fly-deploy.yml@v1
+#       with:
+#         app-name: ${{ vars.FLY_APP_NAME }}
+#         fly-config: ${{ vars.FLY_CONFIG }}
+#         api-url: ${{ vars.API_URL }}
+#       secrets:
+#         FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+name: fly-deploy
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: "Fly app name (e.g. cartaskers-be-staging)"
+        type: string
+        required: true
+      fly-config:
+        description: "Path to fly.toml (e.g. fly.toml or fly.prod.toml)"
+        type: string
+        default: "fly.toml"
+      working-directory:
+        description: "Where the Dockerfile + fly.toml live"
+        type: string
+        default: "."
+      api-url:
+        description: "Base URL for post-deploy smoke check"
+        type: string
+        required: true
+    secrets:
+      FLY_API_TOKEN:
+        description: "Per-app deploy token from `flyctl tokens create deploy`"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never run two deploys to the same app at the same time.
+  group: fly-deploy-${{ inputs.app-name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Show deploy plan
+        run: |
+          echo "App:     ${{ inputs.app-name }}"
+          echo "Config:  ${{ inputs.fly-config }}"
+          echo "SHA:     ${{ github.sha }}"
+          flyctl status -a "${{ inputs.app-name }}" || true
+
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --app "${{ inputs.app-name }}" \
+            --config "${{ inputs.fly-config }}" \
+            --remote-only \
+            --strategy rolling \
+            --wait-timeout 300
+
+      - name: Smoke check
+        # TCP-friendly: just check the host responds. Once /health/ready exists,
+        # change to: curl -fsS "${{ inputs.api-url }}/health/ready"
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -fsS -o /dev/null --max-time 5 "${{ inputs.api-url }}/"; then
+              echo "Smoke check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Smoke check attempt $i failed; retrying in 5s..."
+            sleep 5
+          done
+          echo "Smoke check FAILED — investigate, consider rollback (see runbooks/rollback-deploy.md)"
+          exit 1
