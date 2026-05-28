@@ -120,11 +120,32 @@ step_preflight() {
 step_fly_apps() {
   section "Fly apps"
   for app in "$FLY_APP_BE_STAGING" "$FLY_APP_BE_PRODUCTION"; do
-    if flyctl apps list --json 2>/dev/null | grep -q "\"Name\":\"$app\""; then
+    # flyctl status is the authoritative existence check — more reliable than
+    # parsing apps list JSON (which has been observed to miss apps in some orgs).
+    if flyctl status -a "$app" >/dev/null 2>&1; then
       ok "$app already exists — skipping"
+      continue
+    fi
+
+    info "Creating Fly app: $app (region $FLY_REGION)"
+
+    if [ "$DRY_RUN" = "true" ]; then
+      dim "    [dry-run] flyctl apps create $app --org personal"
+      continue
+    fi
+
+    if flyctl apps create "$app" --org personal; then
+      ok "$app created"
     else
-      info "Creating Fly app: $app (region $FLY_REGION)"
-      run flyctl apps create "$app" --org personal
+      # Creation failed — could be "Name has already been taken" from a previous
+      # partial run, or a race with another session.  Re-check with status: if the
+      # app now exists, we can safely continue.
+      if flyctl status -a "$app" >/dev/null 2>&1; then
+        warn "$app already exists (name taken from a previous run) — continuing"
+      else
+        die "Failed to create $app and it does not appear to exist.
+  Run 'flyctl apps list' to investigate, then re-run this script."
+      fi
     fi
   done
 }
@@ -225,13 +246,14 @@ create_and_store_fly_token() {
   info "Creating Fly deploy token for $app (env: $env)"
   if [ "$DRY_RUN" = "true" ]; then
     dim "    [dry-run] flyctl tokens create deploy -a $app --name github-actions-$env --expiry $FLY_TOKEN_EXPIRY"
-    dim "    [dry-run] gh secret set FLY_API_TOKEN --repo $repo --env $env --body-file -"
+    dim "    [dry-run] <token> | gh secret set FLY_API_TOKEN --repo $repo --env $env"
     return 0
   fi
 
   local token
   token="$(flyctl tokens create deploy -a "$app" --name "github-actions-$env" --expiry "$FLY_TOKEN_EXPIRY")"
-  printf '%s' "$token" | gh secret set FLY_API_TOKEN --repo "$repo" --env "$env" --body-file -
+  # gh secret set reads from stdin when --body/-b is omitted — token never appears on argv.
+  printf '%s' "$token" | gh secret set FLY_API_TOKEN --repo "$repo" --env "$env"
   ok "Stored FLY_API_TOKEN in $repo / $env"
 }
 
