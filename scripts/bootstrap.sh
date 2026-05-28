@@ -129,6 +129,38 @@ step_fly_apps() {
   done
 }
 
+# --- Validation helpers ---------------------------------------------------
+
+# Validate that $1 looks like a Postgres URL.
+# Exits (via die) if it doesn't — prevents importing a garbage DATABASE_URL
+# and discovering the mistake only when Prisma fails at deploy time.
+validate_db_url_shape() {
+  local url="$1"
+  local label="$2"
+
+  if [ -z "$url" ]; then
+    die "$label is empty — cannot continue"
+  fi
+
+  case "$url" in
+    postgresql://*|postgres://*)
+      : ;;  # valid prefix — continue
+    *)
+      die "$label does not start with postgresql:// or postgres://
+  Got: ${url:0:40}...
+  Expected format: postgresql://user:pass@ep-xxx.region.aws.neon.tech/dbname?pgbouncer=true&connection_limit=5"
+      ;;
+  esac
+
+  # Must contain @ (host separator) and / (db name separator)
+  case "$url" in
+    *@*/*) : ;;
+    *) die "$label looks malformed (missing host or database name): ${url:0:60}" ;;
+  esac
+
+  ok "$label shape looks valid"
+}
+
 # --- Step: fly-secrets ----------------------------------------------------
 
 # Set runtime secrets for one Fly app.
@@ -149,6 +181,10 @@ set_fly_secrets_for() {
   local db_url cors jwt
   eval "db_url=\$$db_var"
   eval "cors=\$$cors_var"
+
+  # Validate the URL before importing — catches typos & paste errors immediately
+  # instead of letting them surface as a cryptic Prisma error at deploy time.
+  validate_db_url_shape "$db_url" "DATABASE_URL ($app_env)"
 
   # Generate a fresh JWT secret — never reuse across envs.
   jwt="$(openssl rand -base64 64 | tr -d '\n')"
